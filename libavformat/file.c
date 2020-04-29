@@ -72,6 +72,8 @@ typedef struct FileContext {
     int fd;
     int trunc;
     int blocksize;
+    int follow;
+    int seekable;
 #if HAVE_DIRENT_H
     DIR *dir;
 #endif
@@ -80,6 +82,8 @@ typedef struct FileContext {
 static const AVOption file_options[] = {
     { "truncate", "truncate existing files on write", offsetof(FileContext, trunc), AV_OPT_TYPE_BOOL, { .i64 = 1 }, 0, 1, AV_OPT_FLAG_ENCODING_PARAM },
     { "blocksize", "set I/O operation maximum block size", offsetof(FileContext, blocksize), AV_OPT_TYPE_INT, { .i64 = INT_MAX }, 1, INT_MAX, AV_OPT_FLAG_ENCODING_PARAM },
+    { "follow", "Follow a file as it is being written", offsetof(FileContext, follow), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
+    { "seekable", "Sets if the file is seekable", offsetof(FileContext, seekable), AV_OPT_TYPE_INT, { .i64 = -1 }, -1, 0, AV_OPT_FLAG_DECODING_PARAM | AV_OPT_FLAG_ENCODING_PARAM },
     { NULL }
 };
 
@@ -108,6 +112,10 @@ static int file_read(URLContext *h, unsigned char *buf, int size)
     int ret;
     size = FFMIN(size, c->blocksize);
     ret = read(c->fd, buf, size);
+    if (ret == 0 && c->follow)
+        return AVERROR(EAGAIN);
+    if (ret == 0)
+        return AVERROR_EOF;
     return (ret == -1) ? AVERROR(errno) : ret;
 }
 
@@ -144,7 +152,11 @@ static int file_check(URLContext *h, int mask)
             ret |= AVIO_FLAG_WRITE;
 #else
     struct stat st;
+#   ifndef _WIN32
     ret = stat(filename, &st);
+#   else
+    ret = win32_stat(filename, &st);
+#   endif
     if (ret < 0)
         return AVERROR(errno);
 
@@ -163,7 +175,11 @@ static int file_delete(URLContext *h)
     av_strstart(filename, "file:", &filename);
 
     ret = rmdir(filename);
-    if (ret < 0 && errno == ENOTDIR)
+    if (ret < 0 && (errno == ENOTDIR
+#   ifdef _WIN32
+        || errno == EINVAL
+#   endif
+        ))
         ret = unlink(filename);
     if (ret < 0)
         return AVERROR(errno);
@@ -218,6 +234,14 @@ static int file_open(URLContext *h, const char *filename, int flags)
     c->fd = fd;
 
     h->is_streamed = !fstat(fd, &st) && S_ISFIFO(st.st_mode);
+
+    /* Buffer writes more than the default 32k to improve throughput especially
+     * with networked file systems */
+    if (!h->is_streamed && flags & AVIO_FLAG_WRITE)
+        h->min_packet_size = h->max_packet_size = 262144;
+
+    if (c->seekable >= 0)
+        h->is_streamed = !c->seekable;
 
     return 0;
 }

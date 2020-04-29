@@ -1,6 +1,6 @@
 /*
  * id Quake II CIN File Demuxer
- * Copyright (c) 2003 The FFmpeg Project
+ * Copyright (c) 2003 The FFmpeg project
  *
  * This file is part of FFmpeg.
  *
@@ -33,7 +33,7 @@
  * types. However, a CIN file does start with 5 32-bit numbers that
  * specify audio and video parameters. This demuxer gets around the lack
  * of file signature by performing sanity checks on those parameters.
- * Probabalistically, this is a reasonable solution since the number of
+ * Probabilistically, this is a reasonable solution since the number of
  * valid combinations of the 5 parameters is a very small subset of the
  * total 160-bit number space.
  *
@@ -91,7 +91,7 @@ typedef struct IdcinDemuxContext {
     int64_t first_pkt_pos;
 } IdcinDemuxContext;
 
-static int idcin_probe(AVProbeData *p)
+static int idcin_probe(const AVProbeData *p)
 {
     unsigned int number, sample_rate;
     unsigned int w, h;
@@ -205,7 +205,7 @@ static int idcin_read_header(AVFormatContext *s)
     st->codecpar->height = height;
 
     /* load up the Huffman tables into extradata */
-    if ((ret = ff_get_extradata(st->codecpar, pb, HUFFMAN_TABLE_SIZE)) < 0)
+    if ((ret = ff_get_extradata(s, st->codecpar, pb, HUFFMAN_TABLE_SIZE)) < 0)
         return ret;
 
     if (idcin->audio_present) {

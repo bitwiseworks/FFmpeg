@@ -24,7 +24,7 @@
 
 #include "config.h"
 #include "avcodec.h"
-#include "ac3_parser.h"
+#include "ac3_parser_internal.h"
 #include "bytestream.h"
 #include "internal.h"
 #include "mpegaudiodecheader.h"
@@ -32,7 +32,7 @@
 #include "libavutil/opt.h"
 #include "libavutil/log.h"
 
-#ifndef __MAC_10_11
+#if __MAC_OS_X_VERSION_MIN_REQUIRED < 101100
 #define kAudioFormatEnhancedAC3 'ec-3'
 #endif
 
@@ -43,9 +43,11 @@ typedef struct ATDecodeContext {
     AudioStreamPacketDescription pkt_desc;
     AVPacket in_pkt;
     AVPacket new_in_pkt;
-    AVBitStreamFilterContext *bsf;
     char *decoded_data;
     int channel_map[64];
+
+    uint8_t *extradata;
+    int extradata_size;
 
     int64_t last_pts;
     int eof;
@@ -224,22 +226,23 @@ static void put_descr(PutByteContext *pb, int tag, unsigned int size)
 
 static uint8_t* ffat_get_magic_cookie(AVCodecContext *avctx, UInt32 *cookie_size)
 {
+    ATDecodeContext *at = avctx->priv_data;
     if (avctx->codec_id == AV_CODEC_ID_AAC) {
         char *extradata;
         PutByteContext pb;
-        *cookie_size = 5 + 3 + 5+13 + 5+avctx->extradata_size;
+        *cookie_size = 5 + 3 + 5+13 + 5+at->extradata_size;
         if (!(extradata = av_malloc(*cookie_size)))
             return NULL;
 
         bytestream2_init_writer(&pb, extradata, *cookie_size);
 
         // ES descriptor
-        put_descr(&pb, 0x03, 3 + 5+13 + 5+avctx->extradata_size);
+        put_descr(&pb, 0x03, 3 + 5+13 + 5+at->extradata_size);
         bytestream2_put_be16(&pb, 0);
         bytestream2_put_byte(&pb, 0x00); // flags (= no flags)
 
         // DecoderConfig descriptor
-        put_descr(&pb, 0x04, 13 + 5+avctx->extradata_size);
+        put_descr(&pb, 0x04, 13 + 5+at->extradata_size);
 
         // Object type indication
         bytestream2_put_byte(&pb, 0x40);
@@ -252,19 +255,22 @@ static uint8_t* ffat_get_magic_cookie(AVCodecContext *avctx, UInt32 *cookie_size
         bytestream2_put_be32(&pb, 0); // avgbitrate
 
         // DecoderSpecific info descriptor
-        put_descr(&pb, 0x05, avctx->extradata_size);
-        bytestream2_put_buffer(&pb, avctx->extradata, avctx->extradata_size);
+        put_descr(&pb, 0x05, at->extradata_size);
+        bytestream2_put_buffer(&pb, at->extradata, at->extradata_size);
         return extradata;
     } else {
-        *cookie_size = avctx->extradata_size;
-        return avctx->extradata;
+        *cookie_size = at->extradata_size;
+        return at->extradata;
     }
 }
 
 static av_cold int ffat_usable_extradata(AVCodecContext *avctx)
 {
-    return avctx->extradata_size &&
+    ATDecodeContext *at = avctx->priv_data;
+    return at->extradata_size &&
            (avctx->codec_id == AV_CODEC_ID_ALAC ||
+            avctx->codec_id == AV_CODEC_ID_QDM2 ||
+            avctx->codec_id == AV_CODEC_ID_QDMC ||
             avctx->codec_id == AV_CODEC_ID_AAC);
 }
 
@@ -284,7 +290,7 @@ static int ffat_set_extradata(AVCodecContext *avctx)
         if (status != 0)
             av_log(avctx, AV_LOG_WARNING, "AudioToolbox cookie error: %i\n", (int)status);
 
-        if (cookie != avctx->extradata)
+        if (cookie != at->extradata)
             av_free(cookie);
     }
     return 0;
@@ -320,7 +326,7 @@ static av_cold int ffat_create_decoder(AVCodecContext *avctx, AVPacket *pkt)
             return AVERROR(ENOMEM);
         status = AudioFormatGetProperty(kAudioFormatProperty_FormatInfo,
                                         cookie_size, cookie, &format_size, &in_format);
-        if (cookie != avctx->extradata)
+        if (cookie != at->extradata)
             av_free(cookie);
         if (status != 0) {
             av_log(avctx, AV_LOG_ERROR, "AudioToolbox header-parse error: %i\n", (int)status);
@@ -344,10 +350,10 @@ static av_cold int ffat_create_decoder(AVCodecContext *avctx, AVPacket *pkt)
     } else if (pkt && pkt->size >= 7 &&
                (avctx->codec_id == AV_CODEC_ID_AC3 ||
                 avctx->codec_id == AV_CODEC_ID_EAC3)) {
-        AC3HeaderInfo hdr, *phdr = &hdr;
+        AC3HeaderInfo hdr;
         GetBitContext gbc;
         init_get_bits(&gbc, pkt->data, pkt->size);
-        if (avpriv_ac3_parse_header(&gbc, &phdr) < 0)
+        if (ff_ac3_parse_header(&gbc, &hdr) < 0)
             return AVERROR_INVALIDDATA;
         in_format.mSampleRate = hdr.sample_rate;
         in_format.mChannelsPerFrame = hdr.channels;
@@ -391,6 +397,15 @@ static av_cold int ffat_create_decoder(AVCodecContext *avctx, AVPacket *pkt)
 
 static av_cold int ffat_init_decoder(AVCodecContext *avctx)
 {
+    ATDecodeContext *at = avctx->priv_data;
+    if (avctx->extradata_size) {
+        at->extradata = av_mallocz(avctx->extradata_size + AV_INPUT_BUFFER_PADDING_SIZE);
+        if (!at->extradata)
+            return AVERROR(ENOMEM);
+        at->extradata_size = avctx->extradata_size;
+        memcpy(at->extradata, avctx->extradata, avctx->extradata_size);
+    }
+
     if ((avctx->channels && avctx->sample_rate) || ffat_usable_extradata(avctx))
         return ffat_create_decoder(avctx, NULL);
     else
@@ -414,9 +429,8 @@ static OSStatus ffat_decode_callback(AudioConverterRef converter, UInt32 *nb_pac
         return 0;
     }
 
+    av_packet_unref(&at->in_pkt);
     av_packet_move_ref(&at->in_pkt, &at->new_in_pkt);
-    at->new_in_pkt.data = 0;
-    at->new_in_pkt.size = 0;
 
     if (!at->in_pkt.data) {
         *nb_packets = 0;
@@ -463,32 +477,30 @@ static int ffat_decode(AVCodecContext *avctx, void *data,
     ATDecodeContext *at = avctx->priv_data;
     AVFrame *frame = data;
     int pkt_size = avpkt->size;
-    AVPacket filtered_packet;
     OSStatus ret;
     AudioBufferList out_buffers;
 
-    if (avctx->codec_id == AV_CODEC_ID_AAC && avpkt->size > 2 &&
-        (AV_RB16(avpkt->data) & 0xfff0) == 0xfff0) {
-        uint8_t *p_filtered = NULL;
-        int      n_filtered = 0;
-        if (!at->bsf) {
-            if(!(at->bsf = av_bitstream_filter_init("aac_adtstoasc")))
-                return AVERROR(ENOMEM);
-        }
+    if (avctx->codec_id == AV_CODEC_ID_AAC) {
+        if (!at->extradata_size) {
+            uint8_t *side_data;
+            int side_data_size = 0;
 
-        ret = av_bitstream_filter_filter(at->bsf, avctx, NULL, &p_filtered, &n_filtered,
-                                         avpkt->data, avpkt->size, 0);
-        if (ret >= 0 && p_filtered != avpkt->data) {
-            filtered_packet = *avpkt;
-            avpkt = &filtered_packet;
-            avpkt->data = p_filtered;
-            avpkt->size = n_filtered;
+            side_data = av_packet_get_side_data(avpkt, AV_PKT_DATA_NEW_EXTRADATA,
+                                                &side_data_size);
+            if (side_data_size) {
+                at->extradata = av_mallocz(side_data_size + AV_INPUT_BUFFER_PADDING_SIZE);
+                if (!at->extradata)
+                    return AVERROR(ENOMEM);
+                at->extradata_size = side_data_size;
+                memcpy(at->extradata, side_data, side_data_size);
+            }
         }
     }
 
     if (!at->converter) {
-        if ((ret = ffat_create_decoder(avctx, avpkt)) < 0)
+        if ((ret = ffat_create_decoder(avctx, avpkt)) < 0) {
             return ret;
+        }
     }
 
     out_buffers = (AudioBufferList){
@@ -505,9 +517,9 @@ static int ffat_decode(AVCodecContext *avctx, void *data,
     av_packet_unref(&at->new_in_pkt);
 
     if (avpkt->size) {
-        if ((ret = av_packet_ref(&at->new_in_pkt, avpkt)) < 0)
+        if ((ret = av_packet_ref(&at->new_in_pkt, avpkt)) < 0) {
             return ret;
-        at->new_in_pkt.data = avpkt->data;
+        }
     } else {
         at->eof = 1;
     }
@@ -526,7 +538,12 @@ static int ffat_decode(AVCodecContext *avctx, void *data,
         ffat_copy_samples(avctx, frame);
         *got_frame_ptr = 1;
         if (at->last_pts != AV_NOPTS_VALUE) {
+            frame->pts = at->last_pts;
+#if FF_API_PKT_PTS
+FF_DISABLE_DEPRECATION_WARNINGS
             frame->pkt_pts = at->last_pts;
+FF_ENABLE_DEPRECATION_WARNINGS
+#endif
             at->last_pts = avpkt->pts;
         }
     } else if (ret && ret != 1) {
@@ -549,10 +566,12 @@ static av_cold void ffat_decode_flush(AVCodecContext *avctx)
 static av_cold int ffat_close_decoder(AVCodecContext *avctx)
 {
     ATDecodeContext *at = avctx->priv_data;
-    AudioConverterDispose(at->converter);
+    if (at->converter)
+        AudioConverterDispose(at->converter);
     av_packet_unref(&at->new_in_pkt);
     av_packet_unref(&at->in_pkt);
-    av_free(at->decoded_data);
+    av_freep(&at->decoded_data);
+    av_freep(&at->extradata);
     return 0;
 }
 
@@ -562,7 +581,7 @@ static av_cold int ffat_close_decoder(AVCodecContext *avctx)
         .version    = LIBAVUTIL_VERSION_INT, \
     };
 
-#define FFAT_DEC(NAME, ID) \
+#define FFAT_DEC(NAME, ID, bsf_name) \
     FFAT_DEC_CLASS(NAME) \
     AVCodec ff_##NAME##_at_decoder = { \
         .name           = #NAME "_at", \
@@ -575,22 +594,24 @@ static av_cold int ffat_close_decoder(AVCodecContext *avctx)
         .decode         = ffat_decode, \
         .flush          = ffat_decode_flush, \
         .priv_class     = &ffat_##NAME##_dec_class, \
+        .bsfs           = bsf_name, \
         .capabilities   = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_DELAY, \
-        .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE, \
+        .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE | FF_CODEC_CAP_INIT_CLEANUP, \
+        .wrapper_name   = "at", \
     };
 
-FFAT_DEC(aac,          AV_CODEC_ID_AAC)
-FFAT_DEC(ac3,          AV_CODEC_ID_AC3)
-FFAT_DEC(adpcm_ima_qt, AV_CODEC_ID_ADPCM_IMA_QT)
-FFAT_DEC(alac,         AV_CODEC_ID_ALAC)
-FFAT_DEC(amr_nb,       AV_CODEC_ID_AMR_NB)
-FFAT_DEC(eac3,         AV_CODEC_ID_EAC3)
-FFAT_DEC(gsm_ms,       AV_CODEC_ID_GSM_MS)
-FFAT_DEC(ilbc,         AV_CODEC_ID_ILBC)
-FFAT_DEC(mp1,          AV_CODEC_ID_MP1)
-FFAT_DEC(mp2,          AV_CODEC_ID_MP2)
-FFAT_DEC(mp3,          AV_CODEC_ID_MP3)
-FFAT_DEC(pcm_alaw,     AV_CODEC_ID_PCM_ALAW)
-FFAT_DEC(pcm_mulaw,    AV_CODEC_ID_PCM_MULAW)
-FFAT_DEC(qdmc,         AV_CODEC_ID_QDMC)
-FFAT_DEC(qdm2,         AV_CODEC_ID_QDM2)
+FFAT_DEC(aac,          AV_CODEC_ID_AAC, "aac_adtstoasc")
+FFAT_DEC(ac3,          AV_CODEC_ID_AC3, NULL)
+FFAT_DEC(adpcm_ima_qt, AV_CODEC_ID_ADPCM_IMA_QT, NULL)
+FFAT_DEC(alac,         AV_CODEC_ID_ALAC, NULL)
+FFAT_DEC(amr_nb,       AV_CODEC_ID_AMR_NB, NULL)
+FFAT_DEC(eac3,         AV_CODEC_ID_EAC3, NULL)
+FFAT_DEC(gsm_ms,       AV_CODEC_ID_GSM_MS, NULL)
+FFAT_DEC(ilbc,         AV_CODEC_ID_ILBC, NULL)
+FFAT_DEC(mp1,          AV_CODEC_ID_MP1, NULL)
+FFAT_DEC(mp2,          AV_CODEC_ID_MP2, NULL)
+FFAT_DEC(mp3,          AV_CODEC_ID_MP3, NULL)
+FFAT_DEC(pcm_alaw,     AV_CODEC_ID_PCM_ALAW, NULL)
+FFAT_DEC(pcm_mulaw,    AV_CODEC_ID_PCM_MULAW, NULL)
+FFAT_DEC(qdmc,         AV_CODEC_ID_QDMC, NULL)
+FFAT_DEC(qdm2,         AV_CODEC_ID_QDM2, NULL)

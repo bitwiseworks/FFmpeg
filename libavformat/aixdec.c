@@ -23,7 +23,7 @@
 #include "avformat.h"
 #include "internal.h"
 
-static int aix_probe(AVProbeData *p)
+static int aix_probe(const AVProbeData *p)
 {
     if (AV_RL32(p->buf) != MKTAG('A','I','X','F') ||
         AV_RB32(p->buf +  8) != 0x01000014 ||
@@ -77,7 +77,7 @@ static int aix_read_header(AVFormatContext *s)
         if (size <= 8)
             return AVERROR_INVALIDDATA;
         avio_skip(s->pb, 8);
-        ff_get_extradata(s->streams[i]->codecpar, s->pb, size - 8);
+        ff_get_extradata(s, s->streams[i]->codecpar, s->pb, size - 8);
     }
 
     return 0;
