@@ -73,6 +73,11 @@ int ff_neterrno(void);
 #include <poll.h>
 #endif
 
+#if HAVE_GETADDRINFO && defined (__OS2__)
+/* getaddrinfo is not part of LIBC yet (part of LIBCx instead) */
+#include <libcx/net.h>
+#endif
+
 int ff_socket_nonblock(int socket, int enable);
 
 int ff_network_init(void);
@@ -130,7 +135,7 @@ typedef union sockaddr_union {
 #define MSG_NOSIGNAL 0
 #endif
 
-#if !HAVE_STRUCT_ADDRINFO
+#if !HAVE_STRUCT_ADDRINFO && !(HAVE_GETADDRINFO && defined(__OS2__))
 struct addrinfo {
     int ai_flags;
     int ai_family;
