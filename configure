@@ -825,12 +825,7 @@ check_deps(){
 
 print_config(){
     pfx=$1
-    if test "$host_os" = "os/2"; then
-        # awk treats \ as escape chars, convert them to / in paths
-        files=`echo "$2" | tr '\\\' /`
-    else
-        files=$2
-    fi
+    files=$2
     shift 2
     map 'eval echo "$v \${$v:-no}"' "$@" |
     awk "BEGIN { split(\"$files\", files) }
