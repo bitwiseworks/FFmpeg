@@ -119,7 +119,11 @@ int avpriv_tempfile(const char *prefix, char **filename, int log_offset, void *l
 #undef free
     free(ptr);
 #else
+#ifndef __OS2__
     size_t len = strlen(prefix) + 12; /* room for "/tmp/" and "XXXXXX\0" */
+#else
+    size_t len = strlen(prefix) + 26; /* room for "/@unixroot/var/tmp/" and "XXXXXX\0" */
+#endif
     *filename  = av_malloc(len);
 #endif
     /* -----common section-----*/
@@ -136,9 +140,13 @@ int avpriv_tempfile(const char *prefix, char **filename, int log_offset, void *l
 #   endif
     fd = open(*filename, O_RDWR | O_BINARY | O_CREAT | O_EXCL, 0600);
 #else
+#ifndef __OS2__
     snprintf(*filename, len, "/tmp/%sXXXXXX", prefix);
+#else
+    snprintf(*filename, len, "/@unixroot/var/tmp/%sXXXXXX", prefix);
+#endif
     fd = mkstemp(*filename);
-#if defined(_WIN32) || defined (__ANDROID__) || defined(__DJGPP__)
+#if defined(_WIN32) || defined (__ANDROID__) || defined(__DJGPP__) || defined(__OS2__)
     if (fd < 0) {
         snprintf(*filename, len, "./%sXXXXXX", prefix);
         fd = mkstemp(*filename);
