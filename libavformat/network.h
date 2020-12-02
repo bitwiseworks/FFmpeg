@@ -135,7 +135,7 @@ typedef union sockaddr_union {
 #define MSG_NOSIGNAL 0
 #endif
 
-#if !HAVE_STRUCT_ADDRINFO && !(HAVE_GETADDRINFO && defined(__OS2__))
+#if !HAVE_STRUCT_ADDRINFO
 struct addrinfo {
     int ai_flags;
     int ai_family;

@@ -5911,7 +5911,14 @@ if ! disabled network; then
     check_func getaddrinfo $network_extralibs
     check_func inet_aton $network_extralibs
 
+ case $target_os in
+  os/2*)
+    check_type "netdb.h libcx/net.h" "struct addrinfo"
+  ;;
+  *)  
     check_type netdb.h "struct addrinfo"
+  ;;
+ esac
     check_type netinet/in.h "struct group_source_req" -D_BSD_SOURCE
     check_type netinet/in.h "struct ip_mreq_source" -D_BSD_SOURCE
     check_type netinet/in.h "struct ipv6_mreq" -D_DARWIN_C_SOURCE
